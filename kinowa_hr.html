@@ -414,8 +414,19 @@ function MOCK(action,p){
       saveDB(db); return {ok:true};
     }
     case "me":{
-      const emp=db.emps.find(e=>e.id===session.empId);
+      const emp=db.emps.find(e=>e.email===session.email)||db.emps.find(e=>e.id===session.empId);
       return {ok:true,emp:emp||null};
+    }
+    case "saveMe":{
+      const inEmp=p.emp;
+      let emp=db.emps.find(e=>e.email===session.email);
+      if(emp){ Object.assign(emp,inEmp); }
+      else {
+        emp=Object.assign({id:"E"+String(1001+db.emps.length),email:session.email,
+          status:"在籍",accountStatus:"active",mnCollected:false,history:[]},inEmp);
+        db.emps.push(emp);
+      }
+      saveDB(db); return {ok:true,emp:emp};
     }
     case "forgot": return {ok:true};
     default: return {ok:false,error:"unknown action"};
@@ -482,6 +493,7 @@ function val(id){return document.getElementById(id).value;}
    App
    ============================================================ */
 let EMPS=[];
+let selfEmp=null;
 async function enterApp(){
   document.getElementById("authView").classList.add("hidden");
   document.getElementById("appView").classList.remove("hidden");
@@ -673,23 +685,66 @@ async function revoke(email){
 
 /* ---- Staff self ---- */
 async function renderSelf(){
-  const r=await api("me",{});const e=r.emp;
-  if(!e){document.getElementById("selfCard").innerHTML="<p>登録情報が見つかりません。管理者にお問い合わせください。</p>";return;}
-  const kv=(l,v)=>`<div class="kv"><label>${l}</label><div class="v">${v||"—"}</div></div>`;
-  const mask=v=>v?"••••（管理者のみ閲覧可）":"—";
-  const acct=e.bankName?`${e.bankName} ${e.bankBranch} ${e.acctType} ${e.acctNo}`:"—";
+  const r=await api("me",{});
+  // 台帳に未登録でも、本人が入力できるよう空オブジェクトで開始
+  const e=(r && r.emp) ? r.emp : {email:(session&&session.email)||"", name:(session&&session.name)||""};
+  selfEmp=e;
+  const sel=(id,arr,v)=>`<select id="${id}">${arr.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select>`;
+  const ro=(label,v)=>`<div class="kv"><label>${label}</label><div class="v">${v||"—"}</div></div>`;
   document.getElementById("selfCard").innerHTML=`
-    <div class="self-grid">
-      ${kv("氏名",e.name)}${kv("メールアドレス",e.email)}
-      ${kv("法人",e.corp)}${kv("薬局",e.store)}
-      ${kv("入社日",e.joinDate)}${kv("電話",e.tel)}
-      ${kv("現住所",e.address)}${kv("通勤手段",(e.commute||"")+(e.commuteNote?`（${e.commuteNote}）`:""))}
-      ${kv("給与振込口座",acct)}${kv("マイナンバー",e.mnCollected?"収集済み":"未収集")}
-      ${kv("雇用保険 被保険者番号",mask(e.empInsNo))}${kv("基礎年金番号",mask(e.pensionNo))}
+    <div class="self-grid" style="margin-bottom:18px">
+      ${ro("法人",e.corp)}${ro("薬局",e.store)}
     </div>
-    <div style="margin-top:22px;display:flex;gap:10px">
-      <button class="btn-sm" onclick="toast('変更申請フローは次ステップで実装します')">変更を申請する</button>
+    <div class="readonly-note">法人・薬局は会社が設定します。変更が必要な場合は管理者へご連絡ください。</div>
+
+    <div class="sec-title">基本情報</div>
+    <div class="frow"><label>氏名</label><input id="s_name" value="${e.name||""}"></div>
+    <div class="frow two">
+      <div><label>メールアドレス（ログインID）</label><input id="s_email" value="${e.email||""}" readonly style="background:#eef0ef"></div>
+      <div><label>電話</label><input id="s_tel" value="${e.tel||""}" placeholder="090-0000-0000"></div>
+    </div>
+    <div class="frow"><label>現住所</label><input id="s_address" value="${e.address||""}" placeholder="都道府県市区町村・番地"></div>
+
+    <div class="sec-title">通勤手段</div>
+    <div class="frow two">
+      <div><label>手段</label>${sel("s_commute",COMMUTES,e.commute||"公共交通機関")}</div>
+      <div><label>備考</label><input id="s_commuteNote" value="${e.commuteNote||""}" placeholder="任意（経路・車種など）"></div>
+    </div>
+
+    <div class="sec-title">給与振込口座</div>
+    <div class="frow two">
+      <div><label>銀行名</label><input id="s_bankName" value="${e.bankName||""}"></div>
+      <div><label>支店名</label><input id="s_bankBranch" value="${e.bankBranch||""}"></div>
+    </div>
+    <div class="frow two">
+      <div><label>種別</label>${sel("s_acctType",ACCT_TYPES,e.acctType||"普通")}</div>
+      <div><label>口座番号</label><input id="s_acctNo" value="${e.acctNo||""}"></div>
+    </div>
+    <div class="frow"><label>口座名義（カナ）</label><input id="s_acctHolder" value="${e.acctHolder||""}" placeholder="ヤマダ タロウ"></div>
+
+    <div class="sec-title">雇用保険</div>
+    <div class="frow"><label>雇用保険 被保険者番号</label><input id="s_empInsNo" value="${e.empInsNo||""}" placeholder="お手元の番号がわかる場合のみ"></div>
+
+    <div class="sec-title">社会保険（厚生年金）</div>
+    <div class="frow"><label>基礎年金番号</label><input id="s_pensionNo" value="${e.pensionNo||""}" placeholder="お手元の番号がわかる場合のみ"></div>
+
+    <div style="margin-top:24px;display:flex;gap:10px">
+      <button class="btn-sm" onclick="saveMe()">入力内容を保存</button>
     </div>`;
+}
+async function saveMe(){
+  const e=Object.assign({}, selfEmp, {
+    name:val("s_name"),tel:val("s_tel"),address:val("s_address"),
+    commute:val("s_commute"),commuteNote:val("s_commuteNote"),
+    bankName:val("s_bankName"),bankBranch:val("s_bankBranch"),acctType:val("s_acctType"),
+    acctNo:val("s_acctNo"),acctHolder:val("s_acctHolder"),
+    empInsNo:val("s_empInsNo"),pensionNo:val("s_pensionNo")
+  });
+  if(!e.name){return toast("氏名を入力してください");}
+  const r=await api("saveMe",{emp:e});
+  if(!r||!r.ok){return toast((r&&r.error)||"保存に失敗しました");}
+  selfEmp=r.emp||e;
+  toast("保存しました");
 }
 
 function logout(){clearSession();location.reload();}
