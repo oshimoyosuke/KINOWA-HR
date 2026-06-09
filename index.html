@@ -266,11 +266,11 @@ tbody tr:hover{background:var(--green-bg)}
 
       <!-- INVITE -->
       <section id="page-invite" class="page hidden">
-        <div class="page-head"><div><h2>招待管理</h2><div class="sub">メールアドレスへログイン招待を送信します</div></div></div>
+        <div class="page-head"><div><h2>招待管理</h2><div class="sub">登録済みの従業員に、ログイン招待メールを送信します</div></div></div>
+        <div class="readonly-note" style="margin-bottom:14px">招待は「従業員一覧」に登録済みの人だけに送れます。新しい人はまず従業員一覧で登録してください。</div>
         <div class="toolbar">
-          <input type="email" id="invTargetEmail" placeholder="招待先メールアドレス" style="min-width:240px">
-          <select id="invTargetEmp"><option value="">（任意）紐づける社員</option></select>
-          <button class="btn-sm" onclick="sendInvite()">招待を送信</button>
+          <select id="invTargetEmp" style="min-width:300px"><option value="">招待する従業員を選択…</option></select>
+          <button class="btn-sm" onclick="sendInviteSelected()">招待を送信</button>
         </div>
         <div class="tablewrap">
           <table><thead><tr><th>メール</th><th>紐づく社員</th><th>状態</th><th>送信日時</th><th></th></tr></thead>
@@ -438,10 +438,13 @@ function MOCK(action,p){
     }
     case "invites": return {ok:true,invites:db.invites};
     case "sendInvite":{
+      if(!p.empId) return {ok:false,error:"先に従業員一覧で登録してから招待してください"};
+      const emp=db.emps.find(e=>e.id===p.empId);
+      if(!emp||emp.deleted) return {ok:false,error:"対象の従業員が見つかりません"};
       if(db.invites.find(i=>i.email===p.email && i.status!=="accepted"))
         return {ok:false,error:"このメールには既に有効な招待があります"};
-      db.invites.unshift({email:p.email,empId:p.empId||null,status:"pending",sentAt:nowStr()});
-      const emp=db.emps.find(e=>e.id===p.empId); if(emp){emp.email=p.email;emp.accountStatus="invited";}
+      db.invites.unshift({email:p.email,empId:p.empId,status:"pending",sentAt:nowStr()});
+      emp.email=p.email;emp.accountStatus="invited";
       saveDB(db); return {ok:true};
     }
     case "revokeInvite":{
@@ -572,10 +575,7 @@ async function enterApp(){
   if(session.role==="admin"){
     document.getElementById("adminNav").classList.remove("hidden");
     fillSelect("fCorp",CORPS); fillSelect("fStore",STORES);
-    fillSelect("invTargetEmp",[],true);
     const r=await api("list",{}); EMPS=r.emps;
-    document.getElementById("invTargetEmp").innerHTML='<option value="">（任意）紐づける社員</option>'+
-      EMPS.map(e=>`<option value="${e.id}">${e.name}（${e.corp}）</option>`).join("");
     nav("dash");
   } else {
     document.getElementById("adminNav").classList.add("hidden");
@@ -651,20 +651,22 @@ function openNew(){editingId=null;drawForm({},"新規社員の登録");}
 function drawForm(e,title){
   document.getElementById("drawerTitle").textContent=title;
   const sel=(id,arr,v)=>`<select id="${id}">${arr.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select>`;
+  const req=(!e||!e.id)?' <span style="color:var(--warn)">*</span>':''; // 新規時のみ必須マーク
   document.getElementById("drawerBody").innerHTML=`
     <div class="sec-title">基本情報</div>
-    <div class="frow"><label>氏名</label><input id="f_name" value="${e.name||""}"></div>
+    ${(!e||!e.id)?'<div class="readonly-note">＊印は新規登録時の必須項目です。</div>':''}
+    <div class="frow"><label>氏名${req}</label><input id="f_name" value="${e.name||""}"></div>
     <div class="frow two">
-      <div><label>法人</label>${sel("f_corp",CORPS,e.corp)}</div>
-      <div><label>薬局</label>${sel("f_store",STORES,e.store)}</div>
+      <div><label>法人${req}</label>${sel("f_corp",CORPS,e.corp)}</div>
+      <div><label>薬局${req}</label>${sel("f_store",STORES,e.store)}</div>
     </div>
     <div class="frow two">
       <div><label>状態</label>${sel("f_status",["在籍","休職","退職"],e.status||"在籍")}</div>
-      <div><label>入社日</label><input id="f_join" type="date" value="${e.joinDate||""}"></div>
+      <div><label>入社日${req}</label><input id="f_join" type="date" value="${e.joinDate||""}"></div>
     </div>
     <div class="frow two">
       <div><label>電話</label><input id="f_tel" value="${e.tel||""}"></div>
-      <div><label>メールアドレス（ログインID）</label><input id="f_email" type="email" value="${e.email||""}" placeholder="未設定"></div>
+      <div><label>メールアドレス（ログインID）${req}</label><input id="f_email" type="email" value="${e.email||""}" placeholder="未設定"></div>
     </div>
     <div class="frow"><label>現住所</label><input id="f_address" value="${e.address||""}" placeholder="都道府県市区町村・番地"></div>
 
@@ -802,7 +804,10 @@ function exportCsv(){
   a.click();URL.revokeObjectURL(a.href);
   toast("CSVを出力しました");
 }
+let savingEmp=false;
 async function saveEmp(){
+  if(savingEmp) return;            // 二重送信防止(処理中は無視)
+  const isNew=!editingId;
   const emp={
     id:editingId,name:val("f_name").trim(),corp:val("f_corp"),store:val("f_store"),
     status:val("f_status"),joinDate:val("f_join"),tel:normalizeDigits(val("f_tel")),
@@ -813,18 +818,62 @@ async function saveEmp(){
     empInsNo:val("f_empInsNo"),pensionNo:val("f_pensionNo"),
     mnCollected:document.getElementById("f_mn").checked
   };
+  // 新規登録時は 氏名・入職日・メール・法人・薬局 を必須に
+  if(isNew){
+    const miss=[];
+    if(!emp.name) miss.push("氏名");
+    if(!emp.joinDate) miss.push("入職日");
+    if(!emp.email) miss.push("メールアドレス");
+    if(!emp.corp) miss.push("法人");
+    if(!emp.store) miss.push("薬局");
+    if(miss.length){return toast("必須項目を入力してください: "+miss.join("・"));}
+  }
   const errs=validateEmp(emp);
   if(errs.length){return toast(errs[0]);}
-  const r=await api("save",{emp});
-  if(!r.ok){return toast(r.error||"保存に失敗しました");}
-  const lr=await api("list",{});EMPS=lr.emps;
-  closeDrawer();renderList();toast("保存しました");
+
+  // 連打防止: ボタンを無効化
+  savingEmp=true;
+  const btns=document.querySelectorAll("#drawerFoot button");
+  btns.forEach(b=>b.disabled=true);
+  const saveBtn=Array.from(btns).find(b=>/保存/.test(b.textContent));
+  const oldLabel=saveBtn?saveBtn.textContent:"";
+  if(saveBtn) saveBtn.textContent="保存中…";
+  try{
+    const r=await api("save",{emp});
+    if(!r||!r.ok){toast((r&&r.error)||"保存に失敗しました");return;}
+    const lr=await api("list",{});EMPS=lr.emps;
+    closeDrawer();renderList();
+    if(isNew && r.emp){
+      toast("登録しました");
+      // 登録直後に招待送付を促す
+      setTimeout(()=>{ promptInviteAfterRegister(r.emp); },300);
+    } else {
+      toast("保存しました");
+    }
+  } finally {
+    savingEmp=false;
+    btns.forEach(b=>b.disabled=false);
+    if(saveBtn) saveBtn.textContent=oldLabel;
+  }
+}
+// 新規登録後、招待送付へ誘導
+function promptInviteAfterRegister(emp){
+  if(!emp.email){ toast("メール未設定のため招待を送れません"); return; }
+  if(confirm(emp.name+" さん（"+emp.email+"）に招待メールを送りますか?\nOKで招待を送信します。")){
+    sendInviteTo(emp.email, emp.id);
+  }
 }
 function openDrawer(){document.getElementById("overlay").classList.add("show");document.getElementById("drawer").classList.add("show");}
 function closeDrawer(){document.getElementById("overlay").classList.remove("show");document.getElementById("drawer").classList.remove("show");}
 
 /* ---- Invites ---- */
 async function renderInvites(){
+  // 招待対象プルダウンを最新の社員(メール登録済み・削除されていない)で埋める
+  const sel=document.getElementById("invTargetEmp");
+  const candidates=EMPS.filter(e=>e.deleted!==true && e.email);
+  sel.innerHTML='<option value="">招待する従業員を選択…</option>'+
+    candidates.map(e=>`<option value="${e.id}">${e.name}（${e.corp} / ${e.store}）— ${e.email}</option>`).join("");
+
   const r=await api("invites",{});const inv=r.invites;
   document.getElementById("inviteEmpty").classList.toggle("hidden",inv.length>0);
   document.getElementById("inviteBody").innerHTML=inv.map(i=>{
@@ -835,14 +884,28 @@ async function renderInvites(){
       <td>${i.status==="pending"?`<button class="btn ghost" style="width:auto;padding:4px 10px;font-size:12px" onclick="revoke('${i.email}')">取消</button>`:""}</td></tr>`;
   }).join("");
 }
-async function sendInvite(){
-  const email=val("invTargetEmail").trim().toLowerCase(),empId=val("invTargetEmp");
-  if(!email||!/.+@.+\..+/.test(email)){return toast("正しいメールアドレスを入力してください");}
-  const r=await api("sendInvite",{email,empId});
-  if(!r.ok){return toast(r.error);}
-  document.getElementById("invTargetEmail").value="";
-  const lr=await api("list",{});EMPS=lr.emps;
-  renderInvites();toast("招待を送信しました");
+let sendingInvite=false;
+// 招待管理画面: プルダウンで選んだ社員に送る
+async function sendInviteSelected(){
+  const empId=val("invTargetEmp");
+  if(!empId){return toast("招待する従業員を選択してください");}
+  const emp=EMPS.find(e=>e.id===empId);
+  if(!emp||!emp.email){return toast("この従業員にはメールが設定されていません");}
+  sendInviteTo(emp.email, emp.id);
+}
+// 共通の招待送信(連打防止つき)
+async function sendInviteTo(email, empId){
+  if(sendingInvite) return;
+  email=String(email||"").trim().toLowerCase();
+  if(!email||!/.+@.+\..+/.test(email)){return toast("正しいメールアドレスが設定されていません");}
+  sendingInvite=true;
+  try{
+    const r=await api("sendInvite",{email,empId});
+    if(!r||!r.ok){toast((r&&r.error)||"招待の送信に失敗しました");return;}
+    const lr=await api("list",{});EMPS=lr.emps;
+    if(!document.getElementById("page-invite").classList.contains("hidden")) renderInvites();
+    toast("招待を送信しました");
+  } finally { sendingInvite=false; }
 }
 async function revoke(email){
   await api("revokeInvite",{email});renderInvites();toast("招待を取り消しました");
