@@ -242,16 +242,23 @@ tbody tr:hover{background:var(--green-bg)}
       <section id="page-list" class="page hidden">
         <div class="page-head">
           <div><h2>従業員一覧</h2><div class="sub" id="listCount"></div></div>
-          <button class="btn-sm" onclick="openNew()">＋ 新規登録</button>
+          <div style="display:flex;gap:9px">
+            <button class="btn-sm sec" onclick="exportCsv()">CSV出力</button>
+            <button class="btn-sm" onclick="openNew()">＋ 新規登録</button>
+          </div>
         </div>
         <div class="toolbar">
           <input type="search" id="q" placeholder="氏名・メールで検索" oninput="renderList()">
           <select id="fCorp" onchange="renderList()"><option value="">全法人</option></select>
           <select id="fStore" onchange="renderList()"><option value="">全薬局</option></select>
           <select id="fStatus" onchange="renderList()"><option value="">全ステータス</option><option>在籍</option><option>休職</option><option>退職</option></select>
+          <select id="fFill" onchange="renderList()"><option value="">入力状況(全て)</option><option value="done">入力済みのみ</option><option value="todo">未入力のみ</option></select>
+          <select id="fMn" onchange="renderList()"><option value="">マイナンバー(全て)</option><option value="no">未収集のみ</option><option value="yes">収集済みのみ</option></select>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);cursor:pointer">
+            <input type="checkbox" id="showDeleted" onchange="renderList()" style="width:16px;height:16px;accent-color:var(--green)">削除済みを表示</label>
         </div>
         <div class="tablewrap">
-          <table><thead><tr><th>氏名</th><th>法人 / 薬局</th><th>通勤手段</th><th>状態</th><th>マイナンバー</th><th>アカウント</th></tr></thead>
+          <table><thead><tr><th>氏名</th><th>法人 / 薬局</th><th>状態</th><th>入力状況</th><th>マイナンバー</th><th>アカウント</th></tr></thead>
           <tbody id="listBody"></tbody></table>
           <div id="listEmpty" class="empty hidden">該当する社員がいません</div>
         </div>
@@ -390,16 +397,44 @@ function MOCK(action,p){
     case "save":{
       const e=p.emp;
       if(e.id){ const i=db.emps.findIndex(x=>x.id===e.id);
-        const old=db.emps[i]; e.history=old.history||[];
-        e.history.unshift({when:nowStr(),what:"情報を更新",who:session.name});
-        db.emps[i]=e;
+        const old=db.emps[i]||{};
+        const merged=Object.assign({},old,e); // 既存のdeleted等を保持
+        merged.history=old.history||[];
+        merged.history.unshift({when:nowStr(),what:"情報を更新",who:session.name});
+        db.emps[i]=merged;
+        saveDB(db); return {ok:true,emp:merged};
       } else {
         e.id="E"+String(1001+db.emps.length);
         e.accountStatus="none";
         e.history=[{when:nowStr(),what:"新規登録",who:session.name}];
         db.emps.push(e);
+        saveDB(db); return {ok:true,emp:e};
       }
-      saveDB(db); return {ok:true,emp:e};
+    }
+    case "softDelete":{
+      const emp=db.emps.find(e=>e.id===p.id);
+      if(!emp) return {ok:false,error:"対象が見つかりません"};
+      emp.deleted=true; emp.accountStatus="none";
+      emp.history=emp.history||[]; emp.history.unshift({when:nowStr(),what:"削除(非表示)",who:session.name});
+      // ログインも止める
+      if(emp.email && db.users[emp.email]) db.users[emp.email].status="disabled";
+      saveDB(db); return {ok:true};
+    }
+    case "restore":{
+      const emp=db.emps.find(e=>e.id===p.id);
+      if(!emp) return {ok:false,error:"対象が見つかりません"};
+      emp.deleted=false;
+      emp.history=emp.history||[]; emp.history.unshift({when:nowStr(),what:"復元",who:session.name});
+      if(emp.email && db.users[emp.email]) db.users[emp.email].status="active";
+      saveDB(db); return {ok:true};
+    }
+    case "hardDelete":{
+      const i=db.emps.findIndex(e=>e.id===p.id);
+      if(i<0) return {ok:false,error:"対象が見つかりません"};
+      const emp=db.emps[i];
+      if(emp.email && db.users[emp.email]) delete db.users[emp.email];
+      db.emps.splice(i,1);
+      saveDB(db); return {ok:true};
     }
     case "invites": return {ok:true,invites:db.invites};
     case "sendInvite":{
@@ -429,6 +464,19 @@ function MOCK(action,p){
       saveDB(db); return {ok:true,emp:emp};
     }
     case "forgot": return {ok:true};
+    case "changePassword":{
+      const u=db.users[session.email];
+      if(!u||u.pw!==p.oldPw) return {ok:false,error:"現在のパスワードが違います"};
+      u.pw=p.newPw; saveDB(db); return {ok:true};
+    }
+    case "history":{
+      const emp=db.emps.find(e=>e.id===p.id);
+      return {ok:true,history:(emp&&emp.history)?emp.history:[]};
+    }
+    case "adminReset":{
+      // モックではメール送信できないので擬似的に成功を返す
+      return {ok:true};
+    }
     default: return {ok:false,error:"unknown action"};
   }
 }
@@ -489,6 +537,24 @@ async function doForgot(){
 function authMsg(id,type,t){document.getElementById(id).innerHTML=`<div class="msg ${type}">${t}</div>`;}
 function val(id){return document.getElementById(id).value;}
 
+/* ---- バリデーション ---- */
+function normalizeDigits(s){ // 全角数字→半角、ハイフン以外の記号や空白除去はしない
+  return String(s||"").replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
+}
+function validateEmp(e){
+  const errs=[];
+  if(!e.name||!e.name.trim()) errs.push("氏名は必須です");
+  if(e.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.email)) errs.push("メールアドレスの形式が正しくありません");
+  if(e.tel){ const t=normalizeDigits(e.tel); if(!/^[0-9\-]+$/.test(t)) errs.push("電話番号は数字とハイフンで入力してください"); }
+  if(e.acctNo){ const a=normalizeDigits(e.acctNo); if(!/^[0-9]+$/.test(a)) errs.push("口座番号は数字で入力してください"); }
+  if(e.acctHolder && !/^[ｱ-ﾝﾞﾟア-ンー゛゜\u3000\sA-Za-z\.\-\(\)]+$/.test(e.acctHolder)) errs.push("口座名義はカナまたは英字で入力してください");
+  return errs;
+}
+// 入力が完了しているかの判定(スタッフが埋めるべき必須項目)
+function isProfileComplete(e){
+  return !!(e && e.name && e.tel && e.address && e.bankName && e.bankBranch && e.acctNo && e.acctHolder);
+}
+
 /* ============================================================
    App
    ============================================================ */
@@ -531,15 +597,16 @@ function nav(page){
 
 /* ---- Dashboard ---- */
 function renderDash(){
-  const active=EMPS.filter(e=>e.status==="在籍").length;
-  const mn=EMPS.filter(e=>e.mnCollected).length;
-  const acc=EMPS.filter(e=>e.accountStatus==="active").length;
+  const live=EMPS.filter(e=>e.deleted!==true);
+  const active=live.filter(e=>e.status==="在籍").length;
+  const mn=live.filter(e=>e.mnCollected).length;
+  const acc=live.filter(e=>e.accountStatus==="active").length;
   document.getElementById("dashStats").innerHTML=[
-    [EMPS.length,"登録社員数"],[active,"在籍中"],
-    [mn+" / "+EMPS.length,"マイナンバー収集済"],[acc+" / "+EMPS.length,"アカウント有効"]
+    [live.length,"登録社員数"],[active,"在籍中"],
+    [mn+" / "+live.length,"マイナンバー収集済"],[acc+" / "+live.length,"アカウント有効"]
   ].map(s=>`<div class="stat"><div class="n">${s[0]}</div><div class="l">${s[1]}</div></div>`).join("");
   const by={};
-  EMPS.forEach(e=>{by[e.corp]=by[e.corp]||{a:0,o:0,mn:0,acc:0};
+  live.forEach(e=>{by[e.corp]=by[e.corp]||{a:0,o:0,mn:0,acc:0};
     if(e.status==="在籍")by[e.corp].a++;else by[e.corp].o++;
     if(e.mnCollected)by[e.corp].mn++; if(e.accountStatus==="active")by[e.corp].acc++;});
   document.getElementById("dashByCorp").innerHTML=Object.entries(by).map(([c,v])=>
@@ -549,20 +616,30 @@ function renderDash(){
 /* ---- List ---- */
 function renderList(){
   const q=val("q").toLowerCase(),fc=val("fCorp"),fs=val("fStore"),fst=val("fStatus");
-  const rows=EMPS.filter(e=>
-    (!q||e.name.toLowerCase().includes(q)||(e.email||"").toLowerCase().includes(q))&&
-    (!fc||e.corp===fc)&&(!fs||e.store===fs)&&(!fst||e.status===fst));
-  document.getElementById("listCount").textContent=`${rows.length} 名を表示`;
+  const ff=val("fFill"),fm=val("fMn");
+  const showDel=document.getElementById("showDeleted").checked;
+  const rows=EMPS.filter(e=>{
+    const done=isProfileComplete(e);
+    return (showDel ? e.deleted===true : e.deleted!==true)&&
+    (!q||(e.name||"").toLowerCase().includes(q)||(e.email||"").toLowerCase().includes(q))&&
+    (!fc||e.corp===fc)&&(!fs||e.store===fs)&&(!fst||e.status===fst)&&
+    (!ff||(ff==="done"?done:!done))&&
+    (!fm||(fm==="yes"?e.mnCollected:!e.mnCollected));
+  });
+  document.getElementById("listCount").textContent=
+    (showDel?`削除済み ${rows.length} 名`:`${rows.length} 名を表示`);
   document.getElementById("listEmpty").classList.toggle("hidden",rows.length>0);
-  document.getElementById("listBody").innerHTML=rows.map(e=>`
-    <tr onclick="openEmp('${e.id}')">
-      <td><b>${e.name}</b></td>
-      <td>${e.corp}<br><span style="color:var(--sub);font-size:12px">${e.store}</span></td>
-      <td>${e.commute||"—"}${e.commuteNote?`<br><span style="color:var(--sub);font-size:12px">${e.commuteNote}</span>`:""}</td>
-      <td><span class="badge ${e.status==="在籍"?"b-active":"b-leave"}">${e.status}</span></td>
+  document.getElementById("listBody").innerHTML=rows.map(e=>{
+    const done=isProfileComplete(e);
+    return `
+    <tr onclick="openEmp('${e.id}')" ${e.deleted?'style="opacity:.6"':""}>
+      <td><b>${e.name||"（氏名未入力）"}</b>${e.deleted?' <span class="badge b-leave">削除済</span>':""}</td>
+      <td>${e.corp||"—"}<br><span style="color:var(--sub);font-size:12px">${e.store||""}</span></td>
+      <td><span class="badge ${e.status==="在籍"?"b-active":"b-leave"}">${e.status||"—"}</span></td>
+      <td><span class="badge ${done?"b-yes":"b-pend"}">${done?"入力済":"未入力"}</span></td>
       <td><span class="badge ${e.mnCollected?"b-yes":"b-no"}">${e.mnCollected?"収集済":"未収集"}</span></td>
       <td>${accBadge(e.accountStatus)}</td>
-    </tr>`).join("");
+    </tr>`;}).join("");
 }
 function accBadge(s){return s==="active"?'<span class="badge b-yes">有効</span>':
   s==="invited"?'<span class="badge b-invited">招待済</span>':'<span class="badge b-leave">未発行</span>';}
@@ -629,27 +706,115 @@ function drawForm(e,title){
     </div>
     <div class="toggle-row"><input type="checkbox" id="f_mn" ${e.mnCollected?"checked":""}><label for="f_mn">マイナンバー収集済み</label></div>
 
-    ${e.history?`<div class="sec-title">変更履歴</div><div class="hist">${
-      e.history.map(h=>`<div class="hist-item"><div class="when">${h.when}</div><div class="what">${h.what}</div><div class="who2">by ${h.who}</div></div>`).join("")
-    }</div>`:""}
+    ${(e && e.id)?`
+    <div class="sec-title">アカウント・パスワード</div>
+    <div class="readonly-note">アカウント状態: ${accLabel(e.accountStatus)}　${e.email?("／ ログインID: "+e.email):"／ メール未設定"}</div>
+    ${e.email?`<button class="btn-sm sec" onclick="adminResetPw('${e.id}','${e.email}')">この人にパスワード再設定メールを送る</button>`:`<div class="readonly-note">メール未設定のため「招待管理」から招待してください。</div>`}
+
+    <div class="sec-title">変更履歴</div>
+    <div class="hist" id="empHist"><div class="who2">読み込み中…</div></div>
+    `:""}
   `;
-  document.getElementById("drawerFoot").innerHTML=
-    `<button class="btn-sm sec" style="flex:1" onclick="closeDrawer()">キャンセル</button>
-     <button class="btn-sm" style="flex:1" onclick="saveEmp()">保存</button>`;
+  const foot=document.getElementById("drawerFoot");
+  if(e && e.id){
+    if(e.deleted){
+      foot.innerHTML=
+        `<button class="btn-sm sec" style="flex:1" onclick="restoreEmp('${e.id}')">復元する</button>
+         <button class="btn-sm" style="flex:1;background:var(--warn)" onclick="hardDeleteEmp('${e.id}')">完全に削除</button>`;
+    } else {
+      foot.innerHTML=
+        `<button class="btn-sm sec" style="flex:1;color:var(--warn);border-color:#f0cdc7" onclick="softDeleteEmp('${e.id}')">削除</button>
+         <button class="btn-sm" style="flex:2" onclick="saveEmp()">保存</button>`;
+    }
+  } else {
+    foot.innerHTML=
+      `<button class="btn-sm sec" style="flex:1" onclick="closeDrawer()">キャンセル</button>
+       <button class="btn-sm" style="flex:1" onclick="saveEmp()">保存</button>`;
+  }
   openDrawer();
+  if(e && e.id){ loadHistory(e.id); }
+}
+function accLabel(s){return s==="active"?"有効":s==="invited"?"招待済み":"未発行";}
+async function loadHistory(id){
+  const r=await api("history",{id});
+  const box=document.getElementById("empHist");
+  if(!box) return;
+  const items=(r&&r.ok&&r.history)?r.history:[];
+  if(!items.length){box.innerHTML='<div class="who2">履歴はありません</div>';return;}
+  box.innerHTML=items.map(h=>
+    `<div class="hist-item"><div class="when">${h.when}</div><div class="what">${h.what}</div><div class="who2">by ${h.who}</div></div>`).join("");
+}
+async function adminResetPw(id,email){
+  if(!confirm(email+" にパスワード再設定メールを送ります。よろしいですか?")) return;
+  const r=await api("adminReset",{id,email});
+  if(!r||!r.ok){return toast((r&&r.error)||"送信に失敗しました");}
+  toast("再設定メールを送信しました");
+}
+async function softDeleteEmp(id){
+  const e=EMPS.find(x=>x.id===id);
+  if(!confirm((e?e.name:"この従業員")+" を削除します。\n一覧から非表示になりますが、「削除済みを表示」から復元できます。よろしいですか?")) return;
+  const r=await api("softDelete",{id});
+  if(!r||!r.ok){return toast((r&&r.error)||"削除に失敗しました");}
+  const lr=await api("list",{});EMPS=lr.emps;
+  closeDrawer();renderList();toast("削除しました（復元可）");
+}
+async function restoreEmp(id){
+  const r=await api("restore",{id});
+  if(!r||!r.ok){return toast((r&&r.error)||"復元に失敗しました");}
+  const lr=await api("list",{});EMPS=lr.emps;
+  closeDrawer();renderList();toast("復元しました");
+}
+// 完全削除(取り消し不可・二重確認)
+async function hardDeleteEmp(id){
+  const e=EMPS.find(x=>x.id===id);
+  if(!confirm("【完全削除】"+(e?e.name:"")+"\nこの操作は取り消せません。データが完全に消えます。続けますか?")) return;
+  const typed=prompt('本当に完全削除する場合は「削除」と入力してください。');
+  if(typed!=="削除"){return toast("完全削除を中止しました");}
+  const r=await api("hardDelete",{id});
+  if(!r||!r.ok){return toast((r&&r.error)||"削除に失敗しました");}
+  const lr=await api("list",{});EMPS=lr.emps;
+  closeDrawer();renderList();toast("完全に削除しました");
+}
+// CSV出力
+function exportCsv(){
+  const showDel=document.getElementById("showDeleted").checked;
+  const rows=EMPS.filter(e=> showDel ? e.deleted===true : e.deleted!==true);
+  if(!rows.length){return toast("出力対象がありません");}
+  const cols=[["id","ID"],["name","氏名"],["corp","法人"],["store","薬局"],["status","状態"],
+    ["joinDate","入社日"],["tel","電話"],["email","メール"],["address","現住所"],
+    ["commute","通勤手段"],["commuteNote","通勤備考"],["bankName","銀行"],["bankBranch","支店"],
+    ["acctType","種別"],["acctNo","口座番号"],["acctHolder","名義"],
+    ["empInsNo","雇用保険番号"],["pensionNo","基礎年金番号"],
+    ["mnCollected","マイナンバー収集"],["accountStatus","アカウント"]];
+  const esc=v=>{v=(v===undefined||v===null)?"":String(v);
+    return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  const head=cols.map(c=>c[1]).join(",");
+  const body=rows.map(e=>cols.map(c=>{
+    if(c[0]==="mnCollected")return e.mnCollected?"収集済":"未収集";
+    return esc(e[c[0]]);
+  }).join(",")).join("\r\n");
+  const csv="\uFEFF"+head+"\r\n"+body; // BOM付きでExcelの文字化け防止
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  const d=new Date(),z=n=>String(n).padStart(2,"0");
+  a.href=URL.createObjectURL(blob);
+  a.download=`従業員台帳_${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}.csv`;
+  a.click();URL.revokeObjectURL(a.href);
+  toast("CSVを出力しました");
 }
 async function saveEmp(){
   const emp={
-    id:editingId,name:val("f_name"),corp:val("f_corp"),store:val("f_store"),
-    status:val("f_status"),joinDate:val("f_join"),tel:val("f_tel"),
+    id:editingId,name:val("f_name").trim(),corp:val("f_corp"),store:val("f_store"),
+    status:val("f_status"),joinDate:val("f_join"),tel:normalizeDigits(val("f_tel")),
     email:val("f_email").trim().toLowerCase(),address:val("f_address"),
     commute:val("f_commute"),commuteNote:val("f_commuteNote"),
     bankName:val("f_bankName"),bankBranch:val("f_bankBranch"),acctType:val("f_acctType"),
-    acctNo:val("f_acctNo"),acctHolder:val("f_acctHolder"),
+    acctNo:normalizeDigits(val("f_acctNo")),acctHolder:val("f_acctHolder"),
     empInsNo:val("f_empInsNo"),pensionNo:val("f_pensionNo"),
     mnCollected:document.getElementById("f_mn").checked
   };
-  if(!emp.name){return toast("氏名は必須です");}
+  const errs=validateEmp(emp);
+  if(errs.length){return toast(errs[0]);}
   const r=await api("save",{emp});
   if(!r.ok){return toast(r.error||"保存に失敗しました");}
   const lr=await api("list",{});EMPS=lr.emps;
@@ -730,21 +895,43 @@ async function renderSelf(){
 
     <div style="margin-top:24px;display:flex;gap:10px">
       <button class="btn-sm" onclick="saveMe()">入力内容を保存</button>
-    </div>`;
+    </div>
+
+    <div class="sec-title" style="margin-top:30px">パスワードの変更</div>
+    <div class="frow"><label>現在のパスワード</label><input id="pc_old" type="password" autocomplete="current-password"></div>
+    <div class="frow two">
+      <div><label>新しいパスワード</label><input id="pc_new" type="password" placeholder="8文字以上・英数字" autocomplete="new-password"></div>
+      <div><label>新しいパスワード（確認）</label><input id="pc_new2" type="password" autocomplete="new-password"></div>
+    </div>
+    <div><button class="btn-sm sec" onclick="changeMyPassword()">パスワードを変更</button></div>`;
+}
+async function changeMyPassword(){
+  const oldPw=val("pc_old"),newPw=val("pc_new"),newPw2=val("pc_new2");
+  if(!oldPw||!newPw){return toast("現在と新しいパスワードを入力してください");}
+  if(newPw.length<8){return toast("新しいパスワードは8文字以上にしてください");}
+  if(!/[a-zA-Z]/.test(newPw)||!/[0-9]/.test(newPw)){return toast("英字と数字を含めてください");}
+  if(newPw!==newPw2){return toast("確認用パスワードが一致しません");}
+  const r=await api("changePassword",{oldPw,newPw});
+  if(!r||!r.ok){return toast((r&&r.error)||"変更に失敗しました");}
+  document.getElementById("pc_old").value="";
+  document.getElementById("pc_new").value="";
+  document.getElementById("pc_new2").value="";
+  toast("パスワードを変更しました");
 }
 async function saveMe(){
   const e=Object.assign({}, selfEmp, {
-    name:val("s_name"),tel:val("s_tel"),address:val("s_address"),
+    name:val("s_name").trim(),tel:normalizeDigits(val("s_tel")),address:val("s_address"),
     commute:val("s_commute"),commuteNote:val("s_commuteNote"),
     bankName:val("s_bankName"),bankBranch:val("s_bankBranch"),acctType:val("s_acctType"),
-    acctNo:val("s_acctNo"),acctHolder:val("s_acctHolder"),
+    acctNo:normalizeDigits(val("s_acctNo")),acctHolder:val("s_acctHolder"),
     empInsNo:val("s_empInsNo"),pensionNo:val("s_pensionNo")
   });
-  if(!e.name){return toast("氏名を入力してください");}
+  const errs=validateEmp(e);
+  if(errs.length){return toast(errs[0]);}
   const r=await api("saveMe",{emp:e});
   if(!r||!r.ok){return toast((r&&r.error)||"保存に失敗しました");}
   selfEmp=r.emp||e;
-  toast("保存しました");
+  renderSelf();toast("保存しました");
 }
 
 function logout(){clearSession();location.reload();}
