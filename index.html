@@ -47,7 +47,6 @@ input,select{font-family:inherit;font-size:14px}
 .msg.ok{background:var(--green-l);color:var(--green-d);border-color:#bfe6d6}
 .pw-hint{font-size:12px;color:var(--sub);margin-top:5px}
 .auth-foot{margin-top:16px;text-align:center}
-.demo-note{margin-top:20px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:12px;color:var(--sub);background:var(--bg);line-height:1.8}
 
 /* ===== App shell ===== */
 .app{min-height:100vh;display:flex;flex-direction:column}
@@ -176,12 +175,6 @@ tbody tr:hover{background:var(--green-bg)}
       <div class="field"><label>パスワード</label><input id="loginPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
       <button class="btn" onclick="doLogin()">ログイン</button>
       <div class="auth-foot"><button class="btn ghost" onclick="showForgot()">パスワードをお忘れですか？</button></div>
-      <div class="demo-note">
-        <b>デモ用アカウント</b>（GAS未接続時のモック）<br>
-        管理者：admin@kinowa.biz / pass1234<br>
-        一般：staff@kinowa.biz / pass1234<br>
-        招待受諾フロー確認：<button class="btn ghost" style="padding:2px 4px;font-size:11.5px;display:inline" onclick="showInvite('demo-token-xyz')">招待リンクを開く</button>
-      </div>
     </div>
 
     <!-- invite accept / set password -->
@@ -312,176 +305,25 @@ const COMMUTES = ["車","公共交通機関","その他"];
 const ACCT_TYPES = ["普通","当座"];
 
 /* ============================================================
-   API層: GAS_ENDPOINT があれば fetch、無ければ MOCK を返す
+   API層: GAS_ENDPOINT へ fetch でリクエストする
    GAS側はこのaction名に対応する実装を後で作ります(ステップ2)
    ============================================================ */
 async function api(action, payload){
-  if(GAS_ENDPOINT){
-    try{
-      const res = await fetch(GAS_ENDPOINT,{method:"POST",redirect:"follow",
-        headers:{"Content-Type":"text/plain;charset=utf-8"},
-        body:JSON.stringify({action,payload,token:(session&&session.token)||""})});
-      const r = await res.json();
-      if(r && r.needLogin){ clearSession(); location.reload(); }
-      return r;
-    }catch(err){
-      return {ok:false, error:"通信に失敗しました。ネットワークをご確認ください"};
-    }
+  if(!GAS_ENDPOINT){
+    return {ok:false, error:"接続先が未設定です（GAS_ENDPOINT）。管理者にお問い合わせください。"};
   }
-  return MOCK(action,payload); // モック(GAS未接続時のUI確認用)
+  try{
+    const res = await fetch(GAS_ENDPOINT,{method:"POST",redirect:"follow",
+      headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({action,payload,token:(session&&session.token)||""})});
+    const r = await res.json();
+    if(r && r.needLogin){ clearSession(); location.reload(); }
+    return r;
+  }catch(err){
+    return {ok:false, error:"通信に失敗しました。ネットワークをご確認ください"};
+  }
 }
 
-/* ============================================================
-   MOCK バックエンド (UI確認用) — localStorage を簡易DBに
-   本番ではこの中身はGAS側が担当
-   ============================================================ */
-const DB_KEY="kinowa_hr_mock_v3";
-function loadDB(){
-  let db=JSON.parse(localStorage.getItem(DB_KEY)||"null");
-  if(!db){ db=seed(); localStorage.setItem(DB_KEY,JSON.stringify(db)); }
-  return db;
-}
-function saveDB(db){ localStorage.setItem(DB_KEY,JSON.stringify(db)); }
-function seed(){
-  const names=[["田中 美咲","株式会社ワカバ","ケアの木","在籍",true,"車"],
-    ["佐藤 健一","株式会社LDP","くりの木","在籍",true,"公共交通機関"],
-    ["鈴木 由香","株式会社はれの木","はれの木","在籍",false,"車"],
-    ["髙橋 孝典","株式会社ワカバ","ケアの木","在籍",true,"車"],
-    ["小西 直樹","株式会社LDP","お茶の木","在籍",true,"公共交通機関"],
-    ["片岡 彩","株式会社はれの木","にじの木","在籍",false,"その他"],
-    ["山本 大地","株式会社大地","ゆずの木","休職",true,"車"],
-    ["中村 優子","株式会社サン","サン薬局","在籍",false,"公共交通機関"],
-    ["伊藤 翔","株式会社Alps","ほしの木","退職",true,"車"],
-    ["渡辺 さくら","株式会社PTP","さくらの木","在籍",false,"公共交通機関"]];
-  const emps=names.map((n,i)=>({
-    id:"E"+String(1001+i),name:n[0],corp:n[1],store:n[2],status:n[3],
-    mnCollected:n[4],commute:n[5],commuteNote:"",
-    email:i<5?["tanaka","sato","suzuki","takahashi","konishi"][i]+"@kinowa.biz":"",
-    joinDate:"202"+(i%5)+"-0"+((i%9)+1)+"-01",tel:"090-0000-00"+String(10+i),
-    address:"大阪府大阪市〇〇区"+(i+1)+"-"+(i+2)+"-"+(i+3),
-    bankName:"京都銀行",bankBranch:"宇治支店",acctType:"普通",acctNo:"512"+String(1000+i),acctHolder:n[0].replace(" ","")+"（カナ）",
-    empInsNo:"1234-5678"+i+"-9",pensionNo:"1234-56789"+i,
-    accountStatus:i<3?"active":(i<5?"invited":"none"),
-    history:[{when:n[3]==="在籍"?"2024-04-01 09:12":"2023-10-01 10:00",what:"新規登録",who:"システム"}]
-  }));
-  const invites=[
-    {email:"tanaka@kinowa.biz",empId:"E1001",status:"accepted",sentAt:"2024-04-01 09:00"},
-    {email:"suzuki@kinowa.biz",empId:"E1003",status:"pending",sentAt:"2026-06-01 14:20"},
-    {email:"konishi@kinowa.biz",empId:"E1005",status:"pending",sentAt:"2026-06-05 11:05"}];
-  const users={
-    "admin@kinowa.biz":{pw:"pass1234",role:"admin",name:"管理者 太郎",empId:null},
-    "staff@kinowa.biz":{pw:"pass1234",role:"staff",name:"田中 美咲",empId:"E1001"}
-  };
-  return {emps,invites,users};
-}
-function MOCK(action,p){
-  const db=loadDB();
-  switch(action){
-    case "login":{
-      const u=db.users[p.email];
-      if(!u||u.pw!==p.pw) return {ok:false,error:"メールアドレスまたはパスワードが違います"};
-      return {ok:true,session:{token:"mock-"+Date.now(),email:p.email,role:u.role,name:u.name,empId:u.empId}};
-    }
-    case "setPassword":{
-      // 招待トークン→メール確定(モックは固定)
-      const email=p.email;
-      db.users[email]={pw:p.pw,role:"staff",name:(db.emps.find(e=>e.email===email)||{}).name||"新規スタッフ",empId:(db.emps.find(e=>e.email===email)||{}).id||null};
-      const inv=db.invites.find(i=>i.email===email); if(inv) inv.status="accepted";
-      const emp=db.emps.find(e=>e.email===email); if(emp) emp.accountStatus="active";
-      saveDB(db); return {ok:true};
-    }
-    case "list": return {ok:true,emps:db.emps};
-    case "save":{
-      const e=p.emp;
-      if(e.id){ const i=db.emps.findIndex(x=>x.id===e.id);
-        const old=db.emps[i]||{};
-        const merged=Object.assign({},old,e); // 既存のdeleted等を保持
-        merged.history=old.history||[];
-        merged.history.unshift({when:nowStr(),what:"情報を更新",who:session.name});
-        db.emps[i]=merged;
-        saveDB(db); return {ok:true,emp:merged};
-      } else {
-        e.id="E"+String(1001+db.emps.length);
-        e.accountStatus="none";
-        e.history=[{when:nowStr(),what:"新規登録",who:session.name}];
-        db.emps.push(e);
-        saveDB(db); return {ok:true,emp:e};
-      }
-    }
-    case "softDelete":{
-      const emp=db.emps.find(e=>e.id===p.id);
-      if(!emp) return {ok:false,error:"対象が見つかりません"};
-      emp.deleted=true; emp.accountStatus="none";
-      emp.history=emp.history||[]; emp.history.unshift({when:nowStr(),what:"削除(非表示)",who:session.name});
-      // ログインも止める
-      if(emp.email && db.users[emp.email]) db.users[emp.email].status="disabled";
-      saveDB(db); return {ok:true};
-    }
-    case "restore":{
-      const emp=db.emps.find(e=>e.id===p.id);
-      if(!emp) return {ok:false,error:"対象が見つかりません"};
-      emp.deleted=false;
-      emp.history=emp.history||[]; emp.history.unshift({when:nowStr(),what:"復元",who:session.name});
-      if(emp.email && db.users[emp.email]) db.users[emp.email].status="active";
-      saveDB(db); return {ok:true};
-    }
-    case "hardDelete":{
-      const i=db.emps.findIndex(e=>e.id===p.id);
-      if(i<0) return {ok:false,error:"対象が見つかりません"};
-      const emp=db.emps[i];
-      if(emp.email && db.users[emp.email]) delete db.users[emp.email];
-      db.emps.splice(i,1);
-      saveDB(db); return {ok:true};
-    }
-    case "invites": return {ok:true,invites:db.invites};
-    case "sendInvite":{
-      if(!p.empId) return {ok:false,error:"先に従業員一覧で登録してから招待してください"};
-      const emp=db.emps.find(e=>e.id===p.empId);
-      if(!emp||emp.deleted) return {ok:false,error:"対象の従業員が見つかりません"};
-      if(db.invites.find(i=>i.email===p.email && i.status!=="accepted"))
-        return {ok:false,error:"このメールには既に有効な招待があります"};
-      db.invites.unshift({email:p.email,empId:p.empId,status:"pending",sentAt:nowStr()});
-      emp.email=p.email;emp.accountStatus="invited";
-      saveDB(db); return {ok:true};
-    }
-    case "revokeInvite":{
-      db.invites=db.invites.filter(i=>!(i.email===p.email&&i.status==="pending"));
-      saveDB(db); return {ok:true};
-    }
-    case "me":{
-      const emp=db.emps.find(e=>e.email===session.email)||db.emps.find(e=>e.id===session.empId);
-      return {ok:true,emp:emp||null};
-    }
-    case "saveMe":{
-      const inEmp=p.emp;
-      let emp=db.emps.find(e=>e.email===session.email);
-      if(emp){ Object.assign(emp,inEmp); }
-      else {
-        emp=Object.assign({id:"E"+String(1001+db.emps.length),email:session.email,
-          status:"在籍",accountStatus:"active",mnCollected:false,history:[]},inEmp);
-        db.emps.push(emp);
-      }
-      saveDB(db); return {ok:true,emp:emp};
-    }
-    case "forgot": return {ok:true};
-    case "changePassword":{
-      const u=db.users[session.email];
-      if(!u||u.pw!==p.oldPw) return {ok:false,error:"現在のパスワードが違います"};
-      u.pw=p.newPw; saveDB(db); return {ok:true};
-    }
-    case "history":{
-      const emp=db.emps.find(e=>e.id===p.id);
-      return {ok:true,history:(emp&&emp.history)?emp.history:[]};
-    }
-    case "adminReset":{
-      // モックではメール送信できないので擬似的に成功を返す
-      return {ok:true};
-    }
-    default: return {ok:false,error:"unknown action"};
-  }
-}
-function nowStr(){const d=new Date();const z=n=>String(n).padStart(2,"0");
-  return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;}
 
 /* ============================================================
    セッション
