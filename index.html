@@ -219,6 +219,8 @@ tbody tr:hover{background:var(--green-bg)}
       <div class="nav-item" data-page="list" onclick="nav('list')"><span class="ic">≣</span>従業員一覧</div>
       <div class="nav-group">アカウント</div>
       <div class="nav-item" data-page="invite" onclick="nav('invite')"><span class="ic">✉</span>招待状況</div>
+      <div class="nav-group">管理</div>
+      <div class="nav-item" data-page="settings" onclick="nav('settings')"><span class="ic">⚙</span>設定（法人・薬局）</div>
     </nav>
 
     <main class="main">
@@ -243,8 +245,8 @@ tbody tr:hover{background:var(--green-bg)}
         </div>
         <div class="toolbar">
           <input type="search" id="q" placeholder="氏名・メールで検索" oninput="renderList()">
-          <select id="fCorp" onchange="renderList()"><option value="">全法人</option></select>
-          <select id="fStore" onchange="renderList()"><option value="">全薬局</option></select>
+          <select id="fCorp" onchange="renderList()"><option value="" data-fixed>全法人</option></select>
+          <select id="fStore" onchange="renderList()"><option value="" data-fixed>全薬局</option></select>
           <select id="fStatus" onchange="renderList()"><option value="">全ステータス</option><option>在籍</option><option>休職</option><option>退職</option></select>
           <select id="fFill" onchange="renderList()"><option value="">入力状況(全て)</option><option value="done">入力済みのみ</option><option value="todo">未入力のみ</option></select>
           <select id="fMn" onchange="renderList()"><option value="">マイナンバー(全て)</option><option value="no">未収集のみ</option><option value="yes">収集済みのみ</option></select>
@@ -269,7 +271,31 @@ tbody tr:hover{background:var(--green-bg)}
         </div>
       </section>
 
-      <!-- STAFF SELF -->
+      <!-- SETTINGS (masters) -->
+      <section id="page-settings" class="page hidden">
+        <div class="page-head"><div><h2>設定（法人・薬局）</h2><div class="sub">従業員登録で選べる法人・薬局の一覧を管理します</div></div></div>
+        <div class="readonly-note" style="margin-bottom:18px">ここで追加・編集・削除した内容は、従業員登録のドロップダウンに反映されます。名前を変更しても、既に登録済みの従業員の所属表示は自動では変わりません（各従業員の編集画面で選び直してください）。</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div>
+            <div class="sec-title" style="display:block">法人</div>
+            <div class="toolbar">
+              <input type="text" id="newCorp" placeholder="法人名を入力" style="flex:1;min-width:0">
+              <button class="btn-sm" onclick="addMaster('corp')">追加</button>
+            </div>
+            <div class="tablewrap"><table><tbody id="corpBody"></tbody></table>
+              <div id="corpEmpty" class="empty hidden">法人が登録されていません</div></div>
+          </div>
+          <div>
+            <div class="sec-title" style="display:block">薬局</div>
+            <div class="toolbar">
+              <input type="text" id="newStore" placeholder="薬局名を入力" style="flex:1;min-width:0">
+              <button class="btn-sm" onclick="addMaster('store')">追加</button>
+            </div>
+            <div class="tablewrap"><table><tbody id="storeBody"></tbody></table>
+              <div id="storeEmpty" class="empty hidden">薬局が登録されていません</div></div>
+          </div>
+        </div>
+      </section>
       <section id="page-self" class="page hidden">
         <div class="page-head"><div><h2>マイ情報</h2><div class="sub">登録内容の確認・変更申請ができます</div></div></div>
         <div class="self-card" id="selfCard"></div>
@@ -299,8 +325,9 @@ tbody tr:hover{background:var(--green-bg)}
 const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbx8yH08UMGPYv-iaJmiHmHNXGzJvgX4BLqSblwuc2CqUi3UMVsj1JUqllyNGCfQqUKo8g/exec"
 
 /* ---- グループ構成(メモリの実構成を初期値に) ---- */
-const CORPS = ["株式会社LDP","株式会社ワカバ","株式会社はれの木","株式会社大地","株式会社サン","株式会社Alps","KINOWA Holdings株式会社","株式会社PTP"];
-const STORES = ["ケアの木","ほしの木","くりの木","お茶の木","はれの木","にじの木","ゆずの木","さくらの木","サン薬局"];
+// 法人・薬局リストはサーバー(マスタ)から取得して上書きする。初期値は読み込み前のフォールバック。
+let CORPS = [];
+let STORES = [];
 const COMMUTES = ["車","公共交通機関","その他"];
 const ACCT_TYPES = ["普通","当座"];
 
@@ -411,6 +438,10 @@ async function enterApp(){
   rc.textContent=session.role==="admin"?"管理者":"一般";
   rc.className="role-chip "+(session.role==="admin"?"role-admin":"role-staff");
 
+  // 法人・薬局マスタを読み込む
+  const mr=await api("masters",{});
+  if(mr&&mr.ok){ CORPS=mr.corps||[]; STORES=mr.stores||[]; }
+
   if(session.role==="admin"){
     document.getElementById("adminNav").classList.remove("hidden");
     fillSelect("fCorp",CORPS); fillSelect("fStore",STORES);
@@ -422,6 +453,8 @@ async function enterApp(){
   }
 }
 function fillSelect(id,arr){const el=document.getElementById(id);
+  // data-fixed を付けた先頭option(「全法人」等)以外を一旦消してから入れ直す
+  Array.from(el.querySelectorAll("option:not([data-fixed])")).forEach(o=>o.remove());
   arr.forEach(v=>{const o=document.createElement("option");o.value=v;o.textContent=v;el.appendChild(o);});}
 
 function nav(page){
@@ -431,6 +464,7 @@ function nav(page){
   if(page==="dash") renderDash();
   if(page==="list") renderList();
   if(page==="invite") renderInvites();
+  if(page==="settings") renderSettings();
   if(page==="self") renderSelf();
 }
 
@@ -744,6 +778,63 @@ async function resend(email, empId){
 }
 async function revoke(email){
   await api("revokeInvite",{email});renderInvites();toast("招待を取り消しました");
+}
+
+/* ---- Settings: 法人・薬局マスタ ---- */
+function renderSettings(){
+  renderMasterTable("corp");
+  renderMasterTable("store");
+}
+function renderMasterTable(kind){
+  const list=kind==="corp"?CORPS:STORES;
+  const bodyId=kind==="corp"?"corpBody":"storeBody";
+  const emptyId=kind==="corp"?"corpEmpty":"storeEmpty";
+  document.getElementById(emptyId).classList.toggle("hidden",list.length>0);
+  document.getElementById(bodyId).innerHTML=list.map(name=>{
+    const esc=name.replace(/'/g,"\\'");
+    return `<tr>
+      <td>${name}</td>
+      <td style="text-align:right;white-space:nowrap;width:1%">
+        <button class="btn ghost" style="width:auto;padding:4px 10px;font-size:12px" onclick="renameMaster('${kind}','${esc}')">名前変更</button>
+        <button class="btn ghost" style="width:auto;padding:4px 10px;font-size:12px;color:var(--warn)" onclick="deleteMaster('${kind}','${esc}')">削除</button>
+      </td></tr>`;
+  }).join("");
+}
+let masterBusy=false;
+async function addMaster(kind){
+  if(masterBusy) return;
+  const inputId=kind==="corp"?"newCorp":"newStore";
+  const name=val(inputId).trim();
+  if(!name){return toast((kind==="corp"?"法人名":"薬局名")+"を入力してください");}
+  masterBusy=true;
+  try{
+    const r=await api("masterAdd",{kind,name});
+    if(!r||!r.ok){toast((r&&r.error)||"追加に失敗しました");return;}
+    CORPS=r.corps||CORPS; STORES=r.stores||STORES;
+    document.getElementById(inputId).value="";
+    refreshMastersUI(); toast("追加しました");
+  } finally { masterBusy=false; }
+}
+async function renameMaster(kind,oldName){
+  const newName=prompt("新しい名前を入力してください",oldName);
+  if(newName===null) return;
+  if(!newName.trim()){return toast("名前を入力してください");}
+  const r=await api("masterRename",{kind,oldName,newName:newName.trim()});
+  if(!r||!r.ok){return toast((r&&r.error)||"変更に失敗しました");}
+  CORPS=r.corps||CORPS; STORES=r.stores||STORES;
+  refreshMastersUI(); toast("変更しました");
+}
+async function deleteMaster(kind,name){
+  if(!confirm("「"+name+"」を削除します。よろしいですか?\n（既に登録済みの従業員の所属表示はそのまま残ります）")) return;
+  const r=await api("masterDelete",{kind,name});
+  if(!r||!r.ok){return toast((r&&r.error)||"削除に失敗しました");}
+  CORPS=r.corps||CORPS; STORES=r.stores||STORES;
+  refreshMastersUI(); toast("削除しました");
+}
+// マスタ変更後、設定画面・絞り込み・登録フォームの選択肢を反映
+function refreshMastersUI(){
+  renderSettings();
+  fillSelect("fCorp",CORPS); fillSelect("fStore",STORES);
 }
 
 /* ---- Staff self ---- */
